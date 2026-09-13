@@ -1,0 +1,42 @@
+# ============================================================
+# 依赖清单
+#
+# 分两组：
+#   - 基础组：数据合成 / 训练 / 评测 / 服务，CPU 与 Apple MPS 均可跑
+#   - CUDA 组：仅在有 NVIDIA 显卡的机器上安装（4-bit 量化 + vLLM 部署）
+#
+# 国内安装建议走镜像：
+#   pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# ============================================================
+
+# ---------- 基础组 ----------
+# 版本下限按实际验证通过的环境（Python 3.11 / transformers 5.8 / trl 0.24）锁定，
+# 上限卡住下一个大版本，避免 transformers 5.x -> 6.x、trl 0.24 -> 0.25 的破坏性变更。
+torch>=2.12,<3
+transformers>=5.8,<6
+peft>=0.18,<0.19
+trl>=0.24,<0.25
+datasets>=4.0,<5
+accelerate>=1.11,<2
+safetensors>=0.8
+
+# 数据合成 / 配置
+pyyaml>=6.0
+pydantic>=2.12,<3
+
+# 服务
+fastapi>=0.141
+uvicorn>=0.52
+httpx>=0.28
+
+# 模型下载（国内直连 ModelScope，无需翻墙）
+modelscope>=1.39
+
+tqdm>=4.70
+
+# ---------- CUDA 组（无 NVIDIA 显卡请勿安装）----------
+# bitsandbytes  : QLoRA 4-bit 量化，仅支持 CUDA
+# vllm          : 高吞吐推理服务，仅支持 CUDA
+#
+# 安装方式见 docs/runbook_cuda.md，不要直接写在这里，
+# 否则在 Mac 上 pip install -r requirements.txt 会失败。

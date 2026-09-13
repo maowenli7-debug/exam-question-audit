@@ -1,0 +1,66 @@
+# ============================================================================
+# 目标配置：Qwen2.5-7B-Instruct + QLoRA 4-bit
+#
+# 这份配置对应**正式训练环境：单卡 24GB NVIDIA**。
+# 开发机（Mac M1 Pro / 16GB / 无 CUDA）跑不了，原因有二：
+#   1. bitsandbytes 的 4-bit 量化只支持 CUDA，MPS 后端没有实现
+#   2. 7B 模型 4-bit 约需 5GB 权重 + 激活值，超出 16GB 统一内存的安全余量
+#
+# 开发机上的等价配置见 qlora_qwen2.5-0.5b.yaml——LoRA 超参完全一致，
+# 换机器只需改 model 段。
+#
+# 在 24GB 卡上的执行方式见 docs/runbook_cuda.md。
+# ============================================================================
+
+model:
+  name_or_path: models/Qwen2.5-7B-Instruct
+  # transformers 5.x 移除了 torch_dtype，这里对应 from_pretrained 的 dtype 参数
+  dtype: bfloat16
+  # 4-bit 量化：QLoRA 的核心。
+  #   nf4           —— 正态分布友好的 4-bit 分块量化，比 fp4 更适合权重
+  #   bfloat16      —— 反量化后参与计算的数据类型
+  #   double_quant  —— 对量化常数再量化一次，额外省约 0.4 bit/参数，几乎无损
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_use_double_quant: true
+
+lora:
+  # r=16 / alpha=32 是本项目的固定超参，两个配置共用，不要只改一边
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  # 覆盖全部线性层（注意力 + MLP）。只调 q/v 参数更少但效果上限低，
+  # 24GB 显存足够支撑全线性层的 LoRA
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+training:
+  output_dir: outputs/qwen2.5-7b-lora
+  num_train_epochs: 3
+  per_device_train_batch_size: 2
+  # 默认值是 8。7B 在 24GB 卡上按 8 条算 logits（vocab 15 万）会 OOM，
+  # 而且是在训练跑了几小时、第一次验证时才炸——必须显式压到 1。
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 8      # 等效 batch = 16
+  learning_rate: 1.0e-4
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  max_length: 1024
+  logging_steps: 10
+  save_steps: 200
+  eval_steps: 200
+  save_total_limit: 2
+  gradient_checkpointing: true
+  bf16: true
+  seed: 42
+
+data:
+  train_file: data/train.jsonl
+  dev_file: data/dev.jsonl

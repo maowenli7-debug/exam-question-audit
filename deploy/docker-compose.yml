@@ -1,0 +1,57 @@
+# 单机交付编排。
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#   curl localhost:8000/healthz
+#
+# 只暴露 8000（FastAPI）。vLLM 的 8001 留在容器内部，不映射到宿主机——
+# 这样内网里只有「业务接口」这一个入口，推理端口不会被误连、也不需要单独做鉴权。
+services:
+  audit-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: exam-audit:latest
+    container_name: exam-audit
+    restart: unless-stopped
+
+    ports:
+      - "8000:8000"
+
+    volumes:
+      # 模型权重和训练产物都不打进镜像：镜像会膨胀到几十 GB，
+      # 而且每次重训都要重新 build。挂载进来，换模型只要换宿主机上的目录。
+      - ../models:/app/models:ro
+      - ../outputs:/app/outputs:ro
+
+    environment:
+      BASE_MODEL: /app/models/Qwen2.5-0.5B-Instruct
+      ADAPTER: /app/outputs/qwen2.5-0.5b-lora
+      AUDIT_BACKEND: vllm
+      VLLM_BASE_URL: http://localhost:8001/v1
+      VLLM_MODEL_NAME: question-audit
+      # 断网运行：即使镜像里有 huggingface 相关代码，也不会尝试外连。
+      # 这不是性能优化，是「数据不出内网」这条要求在运行时层面的兜底。
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    # vLLM 加载模型期间 /healthz 会返回 degraded，给它留够启动时间
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"

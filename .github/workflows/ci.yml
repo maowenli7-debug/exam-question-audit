@@ -1,0 +1,89 @@
+# 轻量 CI：只跑不依赖 torch 的那部分。
+#
+# 为什么不全跑：torch + transformers + peft + trl 的安装要几分钟，而且 GitHub
+# 的免费 runner 没有 GPU，训练相关的测试在那里跑不了。
+#
+# 但 core 逻辑（审核规则、结构化解析、数据合成、prompt 契约）只依赖 pydantic
+# 和标准库——这部分是整个项目的地基，出问题会让训练白跑几小时，恰恰最该在
+# 每次 push 时验证。CI 只装 pydantic + pytest，几十秒跑完。
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core-tests:
+    name: 核心逻辑测试（无需 GPU）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装测试依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pydantic>=2.7" "pytest>=8.0"
+
+      - name: 跑测试
+        run: python -m pytest -v
+
+      - name: 数据管线可复现性检查
+        # 数据是固定 seed 生成的，同样输入必须产出同样结果。
+        # 这条如果挂了，说明合成逻辑引入了不确定性，评测就不可复现了。
+        run: |
+          python scripts/build_dataset.py --out-dir /tmp/run1
+          python scripts/build_dataset.py --out-dir /tmp/run2
+          for f in train dev test; do
+            if ! cmp -s "/tmp/run1/$f.jsonl" "/tmp/run2/$f.jsonl"; then
+              echo "✗ $f.jsonl 两次生成结果不一致——数据管线不可复现"
+              exit 1
+            fi
+          done
+          echo "✓ 两次生成的数据逐字节一致"
+
+      - name: 校验数据切分隔离
+        # 训练集与测试集在底题层面必须完全不相交，否则评测指标虚高。
+        # STATS.md 里记了这个结论，这里把它变成会自动检查的断言。
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          def base_keys(path):
+              keys = []
+              for line in Path(path).open(encoding="utf-8"):
+                  rec = json.loads(line)
+                  key = rec.get("base_key")
+                  # 不能用 rec.get("base_key") 直接塞进 set：字段缺失时
+                  # 所有样本都会变成同一个 None，三个切分反而「完全不相交」，
+                  # 检查会假通过。缺字段必须报错。
+                  if not key:
+                      raise SystemExit(f"✗ {path} 里有记录缺少 base_key 字段")
+                  keys.append(key)
+              return keys
+
+          train, test, dev = (base_keys(f"/tmp/run1/{s}.jsonl")
+                              for s in ("train", "test", "dev"))
+          print(f"底题数：train={len(set(train))}/{len(train)}  "
+                f"dev={len(set(dev))}/{len(dev)}  test={len(set(test))}/{len(test)}")
+
+          st, sd, se = set(train), set(dev), set(test)
+          for a, b, name in ((st, se, "训练∩测试"), (st, sd, "训练∩验证"), (sd, se, "验证∩测试")):
+              if a & b:
+                  print(f"✗ {name} 有 {len(a & b)} 个重叠底题")
+                  sys.exit(1)
+              print(f"✓ {name} 无重叠")
+
+          # 验证集和测试集内部底题也要唯一，否则同一条底题被反复评测
+          for keys, name in ((dev, "验证集"), (test, "测试集")):
+              if len(set(keys)) != len(keys):
+                  print(f"✗ {name}内部有重复底题，指标会被同质样本拉偏")
+                  sys.exit(1)
+              print(f"✓ {name}内部底题唯一")
+          PY

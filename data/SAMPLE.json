@@ -1,0 +1,141 @@
+[
+  {
+    "id": "q000000",
+    "question": {
+      "id": "q000000",
+      "subject": "地理",
+      "stage": "初中",
+      "stem": "我国地势的总特征是（　　）（某同学用本题答案与同桌打赌，赌注为一包香烟）",
+      "options": {
+        "A": "东高西低，呈三级阶梯状分布",
+        "B": "四周高、中间低",
+        "C": "西高东低，呈三级阶梯状分布",
+        "D": "南高北低，逐级下降"
+      },
+      "answer": "C",
+      "explanation": "我国地势西高东低，呈三级阶梯状分布，使许多大河自西向东流入海洋。（也可用大气环流数值模拟的相关结论直接验证。）"
+    },
+    "audit": {
+      "conclusion": "不通过",
+      "risk_level": "高",
+      "issues": [
+        {
+          "type": "超纲",
+          "detail": "解析中使用了「大气环流数值模拟」，超出初中学段课程标准要求，学生无法据此理解",
+          "severity": "低"
+        },
+        {
+          "type": "敏感表述",
+          "detail": "题干情境涉及赌博与烟草，不适宜作为学生试题背景",
+          "severity": "高"
+        }
+      ],
+      "suggestion": "改用本学段课程标准内的知识点表述，或将题目调整到相应学段；删除题干中的不适宜内容，重新表述题目情境"
+    },
+    "injected": [
+      "超纲",
+      "敏感表述"
+    ],
+    "base_key": "f16ec166dabd5ced2c226509cbb133003688e3fe"
+  },
+  {
+    "id": "q000001",
+    "question": {
+      "id": "q000001",
+      "subject": "物理",
+      "stage": "初中",
+      "stem": "一辆汽车以 19 m/s 的速度匀速行驶了 8 s，则它通过的路程是（　　）",
+      "options": {
+        "A": "152 m",
+        "B": "2 m",
+        "C": "171 m",
+        "D": "27 m"
+      },
+      "answer": "A",
+      "explanation": "由 s = vt，得 s = 19 m/s × 8 s = 152 m。"
+    },
+    "audit": {
+      "conclusion": "通过",
+      "risk_level": "低",
+      "issues": [],
+      "suggestion": ""
+    },
+    "injected": [],
+    "base_key": "86200cb768b6ddac16b3370080e9425b857558b5"
+  },
+  {
+    "id": "q000002",
+    "question": {
+      "id": "q000002",
+      "subject": "数学",
+      "stage": "初中",
+      "stem": "关于 x 的一元二次方程 x² − 8x + 6 = 0 的根的判别式 b² − 4ac 的值是（　　）",
+      "options": {
+        "A": "88",
+        "B": "-40",
+        "C": "40",
+        "D": "41"
+      },
+      "answer": "C",
+      "explanation": "其中 a = 1，b = −8，c = 6，故判别式为 (−8)² − 4×1×6 = 64 − 24 = 40。"
+    },
+    "audit": {
+      "conclusion": "通过",
+      "risk_level": "低",
+      "issues": [],
+      "suggestion": ""
+    },
+    "injected": [],
+    "base_key": "80b043eeadfb88e557bb908a39b3b347f00686ce"
+  },
+  {
+    "id": "q000003",
+    "question": {
+      "id": "q000003",
+      "subject": "化学",
+      "stage": "初中",
+      "stem": "将 29 g 氯化钠完全溶解在 84 g 水中，所得溶液中溶质的质量分数约为（　　）",
+      "options": {
+        "A": "25.7%",
+        "B": "15.7%",
+        "C": "34.5%",
+        "D": "35.7%"
+      },
+      "answer": "A",
+      "explanation": "溶液总质量 = 29 g + 84 g = 113 g，溶质质量分数 = 29 ÷ 113 × 100% ≈ 25.7%。"
+    },
+    "audit": {
+      "conclusion": "通过",
+      "risk_level": "低",
+      "issues": [],
+      "suggestion": ""
+    },
+    "injected": [],
+    "base_key": "ad68bddf0313a8055bcd6957774015b7d29b1ddf"
+  },
+  {
+    "id": "q000004",
+    "question": {
+      "id": "q000004",
+      "subject": "地理",
+      "stage": "高中",
+      "stem": "受地转偏向力影响，北半球河流的侵蚀作用主要表现为（　　）",
+      "options": {
+        "A": "两岸均匀侵蚀",
+        "B": "左岸侵蚀",
+        "C": "右岸侵蚀",
+        "D": "只在下游侵蚀"
+      },
+      "answer": "C",
+      "explanation": "地转偏向力使北半球运动的物体向右偏转，故河流右岸侵蚀作用更强。"
+    },
+    "audit": {
+      "conclusion": "通过",
+      "risk_level": "低",
+      "issues": [],
+      "suggestion": ""
+    },
+    "injected": [],
+    "base_key": "837b6ef0a4faa9744a97275c3b7b608f735497bb"
+  }
+]

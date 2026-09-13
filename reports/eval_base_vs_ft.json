@@ -1,0 +1,46 @@
+{
+  "meta": {
+    "base_model": "models/Qwen2.5-0.5B-Instruct",
+    "adapter": "outputs/qwen2.5-0.5b-lora",
+    "test_file": "data/test.jsonl",
+    "device": "mps",
+    "n_samples": 300,
+    "decoding": "greedy"
+  },
+  "base": {
+    "name": "基座模型",
+    "n": 300,
+    "format_rate": 0.99,
+    "format_ok": 297,
+    "bare_json_rate": 0.1033,
+    "bare_json_ok": 31,
+    "failure_modes": {
+      "bad_json": 3
+    },
+    "conclusion_acc": 0.5467,
+    "risk_acc": 0.31,
+    "issue_precision": 0.0,
+    "issue_recall": 0.0,
+    "issue_f1": 0.0,
+    "issue_tp": 0,
+    "issue_fp": 0,
+    "issue_fn": 225
+  },
+  "finetuned": {
+    "name": "微调模型",
+    "n": 300,
+    "format_rate": 1.0,
+    "format_ok": 300,
+    "bare_json_rate": 1.0,
+    "bare_json_ok": 300,
+    "failure_modes": {},
+    "conclusion_acc": 0.79,
+    "risk_acc": 0.79,
+    "issue_precision": 0.9877,
+    "issue_recall": 0.7156,
+    "issue_f1": 0.8299,
+    "issue_tp": 161,
+    "issue_fp": 2,
+    "issue_fn": 64
+  }
+}

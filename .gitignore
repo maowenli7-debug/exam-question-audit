@@ -1,0 +1,68 @@
+# ===== 密钥与凭证（硬要求：任何情况下都不进仓库）=====
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+secrets/
+credentials.json
+settings.json
+**/settings.local.json
+
+# ===== 模型权重（体积大，走 ModelScope/镜像单独下载）=====
+models/
+*.safetensors
+*.bin
+*.gguf
+*.pt
+*.pth
+*.onnx
+
+# ===== 数据与训练产物（可由 make data / make train 再生）=====
+outputs/
+*.jsonl
+# 只忽略数据文件本身，不忽略 data/ 目录：STATS.md 记录了数据分布与已知局限，
+# SAMPLE.json 是给人看的数据长什么样，这两个是文档的一部分，要进仓库。
+# 全目录忽略会让 README 里的链接变成死链。
+data/*.jsonl
+
+# ===== 日志：本地产物，不进仓库 =====
+*.log
+
+# ===== 评测产物：报告保留，原始转储不留 =====
+reports/*.raw.json
+reports/predictions/
+reports/**/*.log
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.python-version
+
+# ===== 工具缓存 =====
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.hf/
+.cache/
+wandb/
+runs/
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~

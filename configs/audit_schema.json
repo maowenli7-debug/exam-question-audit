@@ -1,0 +1,95 @@
+{
+  "$defs": {
+    "AuditIssue": {
+      "additionalProperties": false,
+      "description": "一条审核发现的问题。",
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/IssueType",
+          "description": "问题类型，取值见 taxonomy.IssueType。"
+        },
+        "detail": {
+          "description": "具体问题描述，需指明题目中的哪一处、为什么有问题。",
+          "title": "Detail",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/RiskLevel",
+          "description": "该问题自身的严重程度，独立于整题的 risk_level。"
+        }
+      },
+      "required": [
+        "type",
+        "detail",
+        "severity"
+      ],
+      "title": "AuditIssue",
+      "type": "object"
+    },
+    "Conclusion": {
+      "description": "审核结论。由 issues 中最高的风险等级决定，见 derive_conclusion。",
+      "enum": [
+        "通过",
+        "需修改",
+        "不通过"
+      ],
+      "title": "Conclusion",
+      "type": "string"
+    },
+    "IssueType": {
+      "description": "审核发现的问题类型。\n\n注意：这里**不含**「无缺陷」——审核通过就是 issues 为空列表，\n把「没有问题」建模成一种「问题」会让枚举语义变脏。",
+      "enum": [
+        "敏感表述",
+        "学科错误",
+        "表述歧义",
+        "超纲",
+        "格式不规范"
+      ],
+      "title": "IssueType",
+      "type": "string"
+    },
+    "RiskLevel": {
+      "description": "风险等级。顺序敏感：LOW < MEDIUM < HIGH，见 _RISK_ORDER。",
+      "enum": [
+        "低",
+        "中",
+        "高"
+      ],
+      "title": "RiskLevel",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一道题的完整审核结论——本项目的权威输出格式。",
+  "properties": {
+    "conclusion": {
+      "$ref": "#/$defs/Conclusion",
+      "description": "审核结论：通过 / 需修改 / 不通过。"
+    },
+    "risk_level": {
+      "$ref": "#/$defs/RiskLevel",
+      "description": "整题风险等级，取所有 issues 中最高的 severity；无问题时为「低」。"
+    },
+    "issues": {
+      "description": "发现的问题列表。审核通过时为空列表 ``[]``，而不是省略该字段。",
+      "items": {
+        "$ref": "#/$defs/AuditIssue"
+      },
+      "title": "Issues",
+      "type": "array"
+    },
+    "suggestion": {
+      "description": "修改建议。无问题时为空字符串。",
+      "title": "Suggestion",
+      "type": "string"
+    }
+  },
+  "required": [
+    "conclusion",
+    "risk_level",
+    "issues",
+    "suggestion"
+  ],
+  "title": "AuditResult",
+  "type": "object"
+}

@@ -1,0 +1,62 @@
+# ============================================================================
+# 本机实测配置：Qwen2.5-0.5B-Instruct + LoRA（Apple MPS）
+#
+# 这份配置的作用是**让整条链路在本机真实跑通**，产出真实的 adapter 权重和
+# 训练日志，而不是只留下一堆「理论上能跑」的脚本。
+#
+# 与 7B 配置的差异，以及为什么：
+#   - load_in_4bit: false —— bitsandbytes 的 4-bit 只支持 CUDA，MPS 没有实现。
+#     训练脚本检测到非 CUDA 环境会自动忽略 4-bit 设置并打印警告。
+#   - 0.5B 而非 7B —— 16GB 统一内存装不下 7B 的训练开销。
+#   - 超参 r=16 / alpha=32 与 7B 保持一致，这样本机验证的是同一套 LoRA 结构，
+#     换到 CUDA 机器上只需改 model.name_or_path 和 load_in_4bit。
+# ============================================================================
+
+model:
+  name_or_path: models/Qwen2.5-0.5B-Instruct
+  dtype: float32          # MPS 上 float32 最稳。别换成 fp16：Trainer 的 fp16 走的是
+                          # torch.cuda.amp.GradScaler，MPS 上没有这条路，会直接报错
+  load_in_4bit: false     # 见上方说明，MPS 不支持 4-bit
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+training:
+  output_dir: outputs/qwen2.5-0.5b-lora
+  num_train_epochs: 2
+  # batch=1 不是保守，是这台机器的硬约束。显存瓶颈不在 0.5B 权重（fp32 才 2GB），
+  # 而在 LM head 的 logits：vocab 151936，一次前向的 logits 张量就是
+  # batch × seq × 151936 × 4B。batch=4、seq≈800 时单个 logits 就 1.9GB，
+  # 反传要再存一份，cross_entropy 还会升到 fp32，很快就把 16GB 统一内存打满
+  # （实测在 batch=4 时 MPS 直接 OOM）。batch=1 把它压到 ~0.5GB。
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1       # 默认值是 8，不显式设会以同样方式炸掉
+  gradient_accumulation_steps: 16     # 等效 batch 仍是 16，超参与 7B 配置保持一致
+  learning_rate: 2.0e-4
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  max_length: 1024                    # 实测样本 611~798 token，100% 装得下
+  logging_steps: 5
+  save_steps: 150
+  eval_steps: 150
+  save_total_limit: 2
+  # 开了换激活重算换显存。注意 PEFT + gradient checkpointing 需要
+  # enable_input_require_grads()，否则梯度传不进 LoRA 层、loss 不降，
+  # 脚本里已自动处理（见 train_qlora.load_model_and_tokenizer）
+  gradient_checkpointing: true
+  bf16: false
+  seed: 42
+
+data:
+  train_file: data/train.jsonl
+  dev_file: data/dev.jsonl
