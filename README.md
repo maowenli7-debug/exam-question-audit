@@ -1,96 +1,100 @@
-# 命题审核 LLM
+# Exam Question Auditing LLM
 
-把一个通用大模型微调成**只输出固定结构审核结论**的专用模型，部署在内网，替代「人工把题目复制到外部网页 AI 判断」的流程。
+Fine-tuning a general-purpose LLM into a specialized model that **emits audit verdicts in a fixed structure only**, deployed on the intranet to replace a workflow where staff manually copy-pasted exam questions into external web-based AI services.
 
-**核心诉求不是效率，是合规。** 原流程把未公开的命题、答案、解析上传到豆包 / DeepSeek 等外部服务，这是数据泄露。领导的要求是数据走内网——这一条是硬约束，其他都是附带的。
+**The core requirement is compliance, not efficiency.** The original workflow uploaded unpublished exam questions, answer keys, and worked solutions to third-party services (Doubao, DeepSeek, etc.) — that is a data leak. Leadership's requirement was that data stay on the intranet. That constraint is hard; everything else is secondary.
+
+**[English](README.md) | [中文](README.zh.md)**
 
 ---
 
-## 这个仓库是什么
+## What this repository is
 
-一份**可运行**的完整实现：从合成训练数据、QLoRA 微调、对比评测，到 FastAPI 服务与 Docker 交付。
+A **runnable** end-to-end implementation: synthetic training data, QLoRA fine-tuning, head-to-head evaluation, a FastAPI service, and Docker delivery artifacts.
 
-需要说清楚的是运行环境：**本机是 Apple Silicon（M1 Pro / 16GB 统一内存），没有 NVIDIA 显卡。** 所以实际跑的是 Qwen2.5-0.5B + 纯 LoRA，而 24GB 单卡 + 4-bit QLoRA + vLLM 是**目标环境配置**，代码和配置都已按那个环境写好并随仓库提供，但**本机无法真实执行**。
+The runtime environment needs to be stated plainly: **this machine is an Apple Silicon Mac (M1 Pro / 16GB unified memory) with no NVIDIA GPU.** So what actually ran here is Qwen2.5-0.5B with plain LoRA. The 24GB single-GPU + 4-bit QLoRA + vLLM setup is the **target environment** — the code and configs are written for it and ship with the repo, but **cannot actually be executed on this machine**.
 
-这不是省略，而是如实标注。哪些数字是本机真跑出来的、哪些需要 GPU 机器，下面每一处都会写明。
+That is not an omission; it is labeled honestly. Which numbers were really produced here and which need a GPU box is stated everywhere it matters.
 
-## 关键设计：为什么主指标是「格式遵循率」而不是「准确率」
+## Key design decision: why the primary metric is "format compliance", not "accuracy"
 
-下游是数据库和人工复核队列。**格式不合法的输出根本进不了库**——此时审核判断对不对毫无意义，准确率再高也是零。所以技术重心放在「让模型稳定输出合法结构」上。
+The downstream consumer is a database and a human review queue. **Output that isn't structurally valid never reaches the database** — at which point whether the audit judgment was correct is irrelevant; an arbitrarily high accuracy is worth zero. So the engineering focus is on making the model emit valid structures reliably.
 
-| 指标 | 口径 | 为什么重要 |
+| Metric | Definition | Why it matters |
 |---|---|---|
-| **格式遵循率**（主） | 输出能解析成合法 `AuditResult` 的样本占比 | 决定数据能不能入库 |
-| 裸 JSON 率（诊断） | 未经容错提取就合法的占比 | 识别「靠后处理救回来」的假达标 |
-| 结论 / 风险准确率 | 分母是**全量**样本，格式失败记错 | 端到端拿到正确结论的概率 |
+| **Format compliance** (primary) | Share of outputs that parse into a valid `AuditResult` | Decides whether data can be ingested at all |
+| Bare JSON rate (diagnostic) | Share valid *without* fault-tolerant extraction | Catches fake compliance that only survived post-processing |
+| Conclusion / risk accuracy | Denominator is **all** samples; format failures count as wrong | Probability of getting a correct verdict end-to-end |
 
-指标的精确定义、以及为什么字段准确率的分母必须是全量而非「格式合法子集」，见 **[docs/metrics.md](docs/metrics.md)**。
+Exact metric definitions — and why the denominator for field accuracy must be all samples rather than the format-valid subset — are in **[docs/metrics.md](docs/metrics.md)** (Chinese).
 
-## 架构
+## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph offline["离线：数据与训练"]
-        T["templates.py<br/>22 个学科模板"] --> S["synth_data.py<br/>题目合成 + 缺陷注入"]
-        S --> L["标签反推<br/>由注入的缺陷推出结论"]
+    subgraph offline["Offline: data & training"]
+        T["templates.py<br/>22 subject templates"] --> S["synth_data.py<br/>question synthesis + defect injection"]
+        S --> L["Label derivation<br/>conclusion inferred from injected defect"]
         L --> D["train / dev / test<br/>2500 / 200 / 300"]
-        D --> TR["train_qlora.py<br/>QLoRA 微调"]
-        TR --> A["LoRA 适配器"]
+        D --> TR["train_qlora.py<br/>QLoRA fine-tuning"]
+        TR --> A["LoRA adapter"]
     end
 
-    subgraph online["在线：内网推理服务"]
-        Q["审核系统"] -->|"POST /v1/audit"| API["api.py<br/>FastAPI"]
+    subgraph online["Online: intranet inference service"]
+        Q["Audit system"] -->|"POST /v1/audit"| API["api.py<br/>FastAPI"]
         A --> API
         API --> P["prompts.py"]
-        P --> M["模型<br/>vLLM 或 transformers"]
-        M --> PARSE["schema.py<br/>解析 + 校验"]
-        PARSE -->|"合法 AuditResult"| Q
+        P --> M["Model<br/>vLLM or transformers"]
+        M --> PARSE["schema.py<br/>parse + validate"]
+        PARSE -->|"valid AuditResult"| Q
     end
 ```
 
-三个核心模块，其余全部依赖它们、它们不依赖任何其他模块：
+Three core modules; everything else depends on them, and they depend on nothing else:
 
-- **[taxonomy.py](src/audit_llm/taxonomy.py)** — 审核规则体系。审核标准变了只改这一个文件，数据合成、训练标签、评测口径同时跟着变。
-- **[schema.py](src/audit_llm/schema.py)** — 格式契约。「什么叫输出合法」完全由它定义。
-- **[prompts.py](src/audit_llm/prompts.py)** — 训练与推理**共用同一份** prompt 构造代码，杜绝 train/serve skew。
+- **[taxonomy.py](src/audit_llm/taxonomy.py)** — the auditing rule system. Change the standard and you edit this one file; data synthesis, training labels, and evaluation all follow.
+- **[schema.py](src/audit_llm/schema.py)** — the format contract. "What counts as valid output" is defined here and nowhere else.
+- **[prompts.py](src/audit_llm/prompts.py)** — training and inference **share the same** prompt-construction code, eliminating train/serve skew.
 
-详细设计取舍见 **[docs/architecture.md](docs/architecture.md)**。
+Design trade-offs are discussed in **[docs/architecture.md](docs/architecture.md)** (Chinese).
 
-## 快速开始
+## Quick start
 
-环境要求：Python 3.10+，约 5GB 磁盘（含 0.5B 模型）。有 NVIDIA 显卡会快很多，但没有也能跑通全流程。
+Requirements: Python 3.10+, ~5GB disk (including the 0.5B model). An NVIDIA GPU makes it much faster, but the full pipeline runs without one.
 
 ```bash
 git clone https://github.com/maowenli7-debug/exam-question-audit.git && cd exam-question-audit
 pip install -r requirements.txt
 
-# 0. 自检：依赖、设备、模型、数据是否就位
+# 0. Sanity check: dependencies, device, model, data
 make check-env
 
-# 1. 下载模型（约 1GB，走 ModelScope 国内直连）
+# 1. Download the model (~1GB, via ModelScope)
 modelscope download --model Qwen/Qwen2.5-0.5B-Instruct \
     --local_dir models/Qwen2.5-0.5B-Instruct
 
-# 2. 生成数据（确定性，固定 seed，任何机器结果一致）
+# 2. Generate data (deterministic; fixed seed, identical on any machine)
 make data
 
-# 3. 冒烟训练：20 条样本，2 分钟。先确认链路通，别一上来就跑全量
+# 3. Smoke training: 20 samples, 2 minutes. Confirm the pipeline works before a full run
 make smoke
 
-# 4. 全量训练
+# 4. Full training
 make train
 
-# 5. 对比评测：基座 vs 微调
+# 5. Comparative evaluation: base vs fine-tuned
 make eval
 
-# 6. 起服务
+# 6. Start the service
 make serve
 curl -s localhost:8000/healthz | python -m json.tool
 ```
 
-`make help` 可以看到全部目标。
+`make help` lists every target.
 
-### 调用审核接口
+### Calling the audit endpoint
+
+> **Note on the Chinese values below.** The enum values in `taxonomy.py` — subject (`物理` = physics), stage (`初中` = junior high), conclusion (`通过` = pass), risk level (`低` = low), issue types — are **Chinese strings in the code itself**. They are not translated here because translating them would make the example invalid. The model is trained on Chinese input and emits these exact values.
 
 ```bash
 curl -s -X POST localhost:8000/v1/audit \
@@ -108,7 +112,7 @@ curl -s -X POST localhost:8000/v1/audit \
   }' | python -m json.tool
 ```
 
-返回：
+Response:
 
 ```json
 {
@@ -124,221 +128,221 @@ curl -s -X POST localhost:8000/v1/audit \
 }
 ```
 
-`needs_extraction` 是给调用方的告警信号：为 `true` 说明模型输出带了代码块或多余文字，是靠容错提取才拿到 JSON 的——格式并没有真正稳定。
+`needs_extraction` is a warning signal for callers: `true` means the model wrapped its output in a code fence or added stray text, and the JSON was only recovered by fault-tolerant extraction — the format is not actually stable.
 
-### 接入已有系统
+### Integrating with an existing system
 
-除了业务接口 `/v1/audit`，服务还提供 **OpenAI 兼容的 `POST /v1/chat/completions`**。
+Beyond the business endpoint `/v1/audit`, the service also exposes an **OpenAI-compatible `POST /v1/chat/completions`**.
 
-这是刻意的：原审核系统调的是外部网页 AI，接口形态就是 chat 那一套。有了兼容接口，接入方只需要把 `base_url` 从外部服务改成内网地址——**「数据不出内网」就变成了一行配置的改动**，不用改业务代码。接入成本决定了这个项目能不能真的落地。
+This is deliberate. The original audit system called an external web AI, and the interface shape was the chat one. With a compatible endpoint, the integrator only changes `base_url` from the external service to the intranet address — **"data never leaves the intranet" becomes a one-line config change**, with no business-logic changes. Integration cost is what determines whether a project like this actually ships.
 
-## 数据
+## Data
 
-**完全合成，不依赖任何外部数据集。**
+**Fully synthetic. No external dataset is used.**
 
-2500 条训练样本的构造分三步：
+The 2500 training samples are built in three steps:
 
-1. **生成一道没问题的题** —— 22 个学科模板，模板本身保证题目自洽（正确答案唯一，解析与答案一致）
-2. **注入已知缺陷** —— 按概率注入 0~2 个，缺陷类型取自 taxonomy
-3. **由注入的缺陷反推审核结论** —— 注入的是高风险学科错误，标签就是「不通过 / 高风险」
+1. **Generate a question that is free of defects** — 22 subject templates; the template itself guarantees the question is self-consistent (unique correct answer, explanation matching the answer)
+2. **Inject known defects** — probabilistically inject 0–2, drawing defect types from the taxonomy
+3. **Derive the audit verdict from what was injected** — inject a high-risk subject-matter error and the label *is* "reject / high risk"
 
-**标签是注入动作的副产品，不是模型判断的结果。** 这是关键：如果让大模型生成题目再让大模型给结论，拿它去评测另一个模型就是循环论证。这里的基准真值来自构造过程。
+**The label is a by-product of the injection action, not the output of a model judgment.** This matters: if you have an LLM generate questions and then have an LLM label them, using that to evaluate yet another model is circular. Here the ground truth comes from the construction process.
 
-注入后的样本会跑一遍 `Injection.verify` 自检，确认缺陷在最终文本里真的还在——测试里确实抓到过「两个注入器互相干扰导致标签失效」的情况（格式注入器给重复选项之一加了逗号，于是「选项完全相同」这个标签就不成立了）。
+Every injected sample is run through an `Injection.verify` self-check to confirm the defect is genuinely still present in the final text — the test suite has in fact caught a case where two injectors interfered with each other and invalidated a label (the formatting injector appended a comma to one of two duplicate options, which broke the "options are identical" label).
 
-### 切分隔离
+### Split isolation
 
-隔离粒度是**底题**（注入缺陷之前的干净题目），三个切分在底题层面**两两完全不相交**：
+Isolation is enforced at the level of the **base question** (the clean question before defect injection). The three splits are **pairwise disjoint** at that level:
 
-| 检查项 | 结果 |
+| Check | Result |
 |---|---|
-| 训练 ∩ 测试 | **0** |
-| 训练 ∩ 验证 | **0** |
-| 验证 ∩ 测试 | **0** |
+| train ∩ test | **0** |
+| train ∩ dev | **0** |
+| dev ∩ test | **0** |
 
-不这么做的话，测试集里的题就只是训练集的「另一种坏法」，指标会虚高。
+Without this, the test set would just be the training set "broken a different way", and the metrics would be inflated.
 
-完整的分布统计和**已知局限**见 **[data/STATS.md](data/STATS.md)**——包括题目重复率 60%、缺陷类型分布偏离设定权重的原因。这些是真实的不足，写在仓库里而不是藏起来。
+Full distribution statistics and **known limitations** are in **[data/STATS.md](data/STATS.md)** (Chinese) — including the 60% question duplication rate and why the defect-type distribution deviates from the configured weights. These are real shortcomings, written down in the repo rather than hidden.
 
-## 训练
+## Training
 
-LoRA 超参在本机与目标环境**完全一致**，换机器不需要重新调参：
+The LoRA hyperparameters are **identical** between this machine and the target environment, so moving to a GPU box requires no re-tuning:
 
-| 项 | 本机实测 | 目标环境 |
+| | This machine (actual) | Target environment |
 |---|---|---|
-| 基座模型 | Qwen2.5-0.5B-Instruct | Qwen2.5-7B-Instruct |
-| 量化 | 无（MPS 不支持 bitsandbytes） | 4-bit nf4 + double quant |
+| Base model | Qwen2.5-0.5B-Instruct | Qwen2.5-7B-Instruct |
+| Quantization | none (MPS has no bitsandbytes) | 4-bit nf4 + double quant |
 | LoRA r / alpha | 16 / 32 | 16 / 32 |
-| target_modules | 全部线性层（7 个） | 同左 |
-| 设备 | Apple MPS | 单卡 24GB CUDA |
-| 配置文件 | `configs/qlora_qwen2.5-0.5b.yaml` | `configs/qlora_qwen2.5-7b.yaml` |
+| target_modules | all linear layers (7) | same |
+| Device | Apple MPS | single 24GB CUDA GPU |
+| Config file | `configs/qlora_qwen2.5-0.5b.yaml` | `configs/qlora_qwen2.5-7b.yaml` |
 
-训练脚本**按设备自动降级**：检测到非 CUDA 时会关掉 4-bit 量化并打印醒目警告。这不是兜底，而是唯一能在这台机器上真实跑通的方式——bitsandbytes 的 4-bit 没有 MPS 实现。
+The training script **degrades automatically by device**: on non-CUDA hardware it disables 4-bit quantization and prints a prominent warning. This is not a fallback — it is the only way to actually run on this machine, since bitsandbytes' 4-bit path has no MPS implementation.
 
-### 本机跑的两个坑（都已在代码里处理）
+### Two pitfalls on Apple Silicon (both handled in code)
 
-**1. 显存瓶颈不是模型权重，是 logits。** 0.5B 的 fp32 权重才 2GB，但 vocab 151936，一次前向的 logits 张量是 `batch × seq × 151936 × 4B`——batch=4、seq≈800 时单个就是 1.9GB，反传要再存一份，`cross_entropy` 还会升到 fp32。实测 batch=4 直接 OOM。所以本机配置强制 `batch=1 × accum=16`（等效 batch 仍是 16）。`per_device_eval_batch_size` 也必须显式设成 1——它的默认值是 8，不改的话会在训练跑了几小时后、第一次验证时才炸掉。
+**1. The memory bottleneck is the logits, not the model weights.** The 0.5B model's fp32 weights are only 2GB, but the vocabulary is 151936, so a single forward pass produces a logits tensor of `batch × seq × 151936 × 4B` — at batch=4 and seq≈800 that is 1.9GB for one copy, and backpropagation needs another while `cross_entropy` promotes to fp32. Batch=4 OOMs outright in practice. The local config therefore forces `batch=1 × accum=16` (still an effective batch of 16). `per_device_eval_batch_size` must also be set explicitly to 1 — its default is 8, and leaving it would blow up hours into training, at the first validation pass.
 
-**2. PEFT + gradient checkpointing 会让 loss 平着不降。** 重算时输入张量的 `requires_grad` 是 `False`，梯度传不到 LoRA 层，而且**不报任何错**。`prepare_model_for_kbit_training()` 内部会处理这件事，但非量化路径必须手动补 `enable_input_require_grads()`。
+**2. PEFT + gradient checkpointing makes the loss flatline.** During recomputation the input tensor's `requires_grad` is `False`, so gradients never reach the LoRA layers — **and no error is raised**. `prepare_model_for_kbit_training()` handles this internally, but the non-quantized path requires calling `enable_input_require_grads()` manually.
 
-要在 CUDA 机器上跑正式训练，见 **[docs/runbook_cuda.md](docs/runbook_cuda.md)**。
+To run real training on a CUDA machine, see **[docs/runbook_cuda.md](docs/runbook_cuda.md)** (Chinese).
 
-## 评测
+## Evaluation
 
 <!-- EVAL_RESULTS_START -->
-在 300 条测试集上，基座与微调各跑一遍。**以下是本机真实跑出的数字**，完整报告见 **[reports/eval_report.md](reports/eval_report.md)**。
+Base and fine-tuned models each ran over the 300-sample test set. **These numbers were really produced on this machine.** The full report is at **[reports/eval_report.md](reports/eval_report.md)** (Chinese).
 
-| 指标 | 基座模型 | 微调模型 | 变化 |
+| Metric | Base model | Fine-tuned | Change |
 |---|---:|---:|---|
-| 格式遵循率（主指标） | 99.0% | **100.0%** | ↑ 1.0 pp |
-| └ 其中「裸 JSON」 | **10.3%** | **100.0%** | ↑ 89.7 pp |
-| └ 需容错提取才达标 | 266 条 | 0 条 | — |
-| 审核结论准确率 | 54.7% | **79.0%** | ↑ 24.3 pp |
-| 风险等级准确率 | 31.0% | **79.0%** | ↑ 48.0 pp |
-| 问题类型 F1 | 0.000 | **0.830** | ↑ 0.830 |
+| Format compliance (primary) | 99.0% | **100.0%** | ↑ 1.0 pp |
+| └ of which "bare JSON" | **10.3%** | **100.0%** | ↑ 89.7 pp |
+| └ required extraction to pass | 266 | 0 | — |
+| Audit conclusion accuracy | 54.7% | **79.0%** | ↑ 24.3 pp |
+| Risk level accuracy | 31.0% | **79.0%** | ↑ 48.0 pp |
+| Issue-type F1 | 0.000 | **0.830** | ↑ 0.830 |
 
-### 读这张表要注意什么
+### How to read this table
 
-**主指标（格式遵循率）在这个规模上饱和了，它掩盖了真实差异。** 它带三级容错提取兜底——只要输出文本里**能剥出**一个合法 JSON 就算达标。而基座模型很爱用 markdown 围栏（三个反引号）把 JSON 包起来，剥一下就达标，于是拿到 99.0%：**300 条里 266 条是靠后处理救回来的**，真正自己就输出干净 JSON 的只有 10.3%。
+**The primary metric saturated at this scale, and it hides the real difference.** It has three levels of fault-tolerant extraction behind it — any output from which a valid JSON *can be sliced out* counts as passing. The base model loves wrapping JSON in a markdown fence (three backticks); strip that and it passes, yielding 99.0%. **266 of the 300 samples were rescued by post-processing**; only 10.3% emitted clean JSON on their own.
 
-微调后的提升藏在「裸 JSON」这一列：**10.3% → 100.0%，且零条需要提取。** 这个增益比主指标更有实际意义——生产环境不该指望下游必须做容错提取，那本身就是不稳定的来源。所以主指标旁边那个诊断指标不是装饰，是这次唯一带信号的指标。
+The fine-tuning gain is hidden in the "bare JSON" column: **10.3% → 100.0%, with zero samples needing extraction.** That gain is more meaningful than the primary metric — production should not depend on downstream systems doing fault-tolerant extraction; that is itself a source of instability. The diagnostic metric next to the primary one is not decoration; it is the only metric that carried signal here.
 
-**基座模型的 54.7%「结论准确率」是蒙的。** 它 297/300 条一律回答「通过」、`issues` 恒为空数组——一个问题都没报出来。而测试集里判「通过」的样本恰好占 54.7%，所以一律答「通过」就能拿到这个数。**它学会了输出的「形状」，但没学会「审」。**
+**The base model's 54.7% "conclusion accuracy" is a guess.** It answered `通过` (pass) in 297 of 300 cases with `issues` always an empty array — it never reported a single issue. The test set happens to contain exactly 54.7% "pass" samples, so answering "pass" unconditionally scores that number. **It learned the shape of the output, not how to audit.**
 
-### 分问题类型的召回率
+### Recall by issue type
 
-总 F1 会把「某类几乎查不出」平均掉，拆开看：
+Aggregate F1 averages away the case where one class is nearly undetectable. Broken out:
 
-| 问题类型 | 真值条数 | 基座召回 | 微调召回 |
+| Issue type | Ground-truth count | Base recall | Fine-tuned recall |
 |---|---:|---:|---:|
-| **学科错误** | **78** | 0.0% | **53.8%** |
-| 格式不规范 | 53 | 0.0% | 86.8% |
-| 表述歧义 | 48 | 0.0% | 64.6% |
-| 超纲 | 27 | 0.0% | 96.3% |
-| 敏感表述 | 19 | 0.0% | 84.2% |
+| **Subject-matter error** (`学科错误`) | **78** | 0.0% | **53.8%** |
+| Malformed formatting (`格式不规范`) | 53 | 0.0% | 86.8% |
+| Ambiguous wording (`表述歧义`) | 48 | 0.0% | 64.6% |
+| Out of syllabus (`超纲`) | 27 | 0.0% | 96.3% |
+| Sensitive phrasing (`敏感表述`) | 19 | 0.0% | 84.2% |
 
-精确率 98.8%（FP 仅 2），但**漏检高度集中在「学科错误」**：漏掉的 64 个里 36 个是它，占总漏检的 56%。
+Precision is 98.8% (only 2 false positives), but **misses are heavily concentrated in subject-matter errors**: 36 of the 64 missed detections are that class, 56% of all misses.
 
-排序本身透露了原因（下表按召回从低到高排）。**最后两名恰好是两类需要真的读懂语义的**：
+The ordering itself reveals the cause (sorted here by recall, ascending). **The bottom two are exactly the classes that require actually understanding semantics:**
 
-| 类型 | 召回 | 模型实际要做什么 |
+| Type | Recall | What the model actually has to do |
 |---|---:|---|
-| 学科错误 | 53.8% | 算出「答案与解析矛盾」或「选项重复」——逻辑一致性检查 |
-| 表述歧义 | 64.6% | 发现题干把具体数值换成了「若干」这类模糊词，缺了必要条件 |
-| 格式不规范 | 86.8% | 看选项缺没缺单位、末尾是逗号还是句号——正则就能匹配 |
-| 超纲 | 96.3% | 判断术语是否超出学段——基本是查表 |
-| 敏感表述 | 84.2% | 见下方说明 |
+| Subject-matter error | 53.8% | Detect "answer contradicts explanation" or "duplicate options" — a logical consistency check |
+| Ambiguous wording | 64.6% | Notice the stem replaced concrete values with vague words like "several", removing a necessary condition |
+| Malformed formatting | 86.8% | Check for missing units, trailing comma vs. period — regex matches this |
+| Out of syllabus | 96.3% | Judge whether terminology exceeds the grade band — essentially a lookup |
+| Sensitive phrasing | 84.2% | See the caveat below |
 
-也就是说，这个 0.5B 模型学到的主要是**可模板化的表层模式**，真正的语义审核能力还很弱。这比单看一个 0.830 的 F1 有用得多——它直接指出下一步该往哪投入：需要推理的那两类，靠继续加同类数据收效有限。
+In other words, what this 0.5B model learned is mostly **templatable surface patterns**; genuine semantic auditing ability is still weak. That is far more useful than a bare F1 of 0.830 — it points directly at where the next investment should go: for the two classes requiring reasoning, adding more data of the same kind has limited returns.
 
-**但「敏感表述」那 84.2% 要打个折扣。** 注入的敏感内容取自 `synth_data._SENSITIVE_BANK` 这个**固定小词表**（十几个短语），所以模型可能只是认出了这几个短语，而不是真的在判断内容是否适宜。这一类的高分**部分来自数据构造方式，不代表真实场景的敏感内容识别能力**——真实审核里的敏感表述是开放集合，靠记词表没有用。
+**But the 84.2% for sensitive phrasing deserves a discount.** The injected sensitive content is drawn from `synth_data._SENSITIVE_BANK`, a **fixed short word list** (a dozen or so phrases), so the model may simply be recognizing those phrases rather than judging whether content is appropriate. The high score for this class **partly reflects how the data was constructed, not real-world sensitivity detection** — sensitive content in real review is an open set, and memorizing a word list does not generalize.
 
-### 与简历里「55% → 91%」的关系
+### Relationship to the "55% → 91%" on my résumé
 
-**这组数字没有复现简历里的 55% → 91%，也不应该期待复现**，两者不可比：
+**These numbers do not reproduce the résumé's 55% → 91%, and should not be expected to.** The two are not comparable:
 
-| | 简历 | 本仓库 |
+| | Résumé | This repo |
 |---|---|---|
-| 基座模型 | Qwen2.5-**7B** | Qwen2.5-**0.5B** |
-| 数据 | EduData 真实题目 | 全合成（模板化，语言复杂度远低于真实命题） |
-| prompt | 未知 | 空骨架 + 字段取值说明（见 `prompts.py`） |
-| 解析口径 | 未知 | 三级容错提取（**偏宽松，会把基座的裸 JSON 率抬高**） |
+| Base model | Qwen2.5-**7B** | Qwen2.5-**0.5B** |
+| Data | EduData real questions | Fully synthetic (templated; far lower linguistic complexity than real exams) |
+| Prompt | unknown | empty skeleton + field-value description (see `prompts.py`) |
+| Parsing | unknown | three-level fault-tolerant extraction (**permissive, which inflates the base model's numbers**) |
 
-其中最后一行是关键：我的解析器是刻意做宽松的，因为真实下游不能因为模型多写了一句话就丢弃结果。代价就是主指标会被抬高。
+That last row is the key one: the parser is deliberately permissive, because a real downstream system cannot discard a result just because the model added an extra sentence. The cost is that the primary metric is inflated.
 
-**换个口径看会更清楚**：如果按「裸 JSON」这个更严的口径算，本仓库基座的真实起点不是 99.0%，而是 **10.3%**。这个量级和简历里的「55%」才算能对话——但仍然**不能直接比**，因为模型（0.5B vs 7B）和数据（合成 vs 真实题目）都不同。可以说的是：**「基座模型输出格式遵循率很高」这个结论完全依赖于解析口径有多宽松**，同一份输出，宽松口径下是 99%，严格口径下是 10.3%。
+**A different framing makes it clearer:** under the stricter "bare JSON" definition, this repo's base model does not start at 99.0% but at **10.3%**. That order of magnitude is at least in the same conversation as the résumé's "55%" — though still **not directly comparable**, since both the model (0.5B vs. 7B) and the data (synthetic vs. real questions) differ. What can be said is this: **the claim "the base model already has a high format compliance rate" depends entirely on how permissive the parser is.** The same outputs are 99% under a permissive definition and 10.3% under a strict one.
 
-真实题目上的审核能力无法用这份合成数据评估——题目语言复杂度差得太远。见 [data/STATS.md](data/STATS.md) 的「已知局限」。
+Auditing ability on real exam questions cannot be assessed with this synthetic data — the linguistic complexity is far too different. See "Known limitations" in [data/STATS.md](data/STATS.md).
+
 <!-- EVAL_RESULTS_END -->
 
-评测协议：贪心解码（结果可复现）、基座与微调跑同一份测试集 / 同一个 prompt / 同一套解析器。
+Evaluation protocol: greedy decoding (reproducible results); base and fine-tuned models run the same test set, the same prompt, and the same parser.
 
-## 部署
+## Deployment
 
 ```bash
-# 合并 LoRA 到基座权重（推理路径最短）
+# Merge LoRA into the base weights (shortest inference path)
 python scripts/merge_adapter.py \
     --base models/Qwen2.5-0.5B-Instruct \
     --adapter outputs/qwen2.5-0.5b-lora \
     --out models/merged
 
-# Docker（需要 NVIDIA GPU）
+# Docker (requires an NVIDIA GPU)
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-服务分两层：**vLLM 负责高吞吐推理**（只监听容器内的 8001），**FastAPI 负责业务编排**（对外的 8000，做 prompt 渲染和结构校验）。换模型只动 vLLM 层，改审核规则只动 FastAPI 层。
+The service is split into two layers: **vLLM handles high-throughput inference** (listening only on the container-internal port 8001), and **FastAPI handles business orchestration** (port 8000, externally facing, doing prompt rendering and structural validation). Swapping models touches only the vLLM layer; changing audit rules touches only the FastAPI layer.
 
-容器内设了 `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`——这不是性能优化，而是「数据不出内网」在运行时层面的兜底。
+The container sets `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` — not a performance optimization, but a runtime backstop for "data never leaves the intranet".
 
-## 项目结构
+## Project structure
 
 ```
 src/audit_llm/
-  taxonomy.py      审核规则体系（分类 / 风险 / 结论推导）
-  schema.py        结构化定义与三级容错解析
-  prompts.py       训练与推理共用的 prompt 构造
-  templates.py     22 个学科题目模板
-  synth_data.py    缺陷注入与标签反推
-  train_qlora.py   QLoRA 训练（设备自适应）
-  infer.py         transformers 推理后端
-  evaluate.py      评测指标
-  api.py           FastAPI 服务
-scripts/           命令行入口（建数据 / 评测 / 环境自检 / 合并权重）
-configs/           训练配置（0.5B 本机 / 7B 目标）
-deploy/            Dockerfile、compose、vLLM 启动脚本
-docs/              架构说明、CUDA 训练手册、指标口径
-tests/             50 个测试
+  taxonomy.py      audit rule system (classification / risk / conclusion derivation)
+  schema.py        structured definitions and three-level fault-tolerant parsing
+  prompts.py       prompt construction shared by training and inference
+  templates.py     22 subject question templates
+  synth_data.py    defect injection and label derivation
+  train_qlora.py   QLoRA training (device-adaptive)
+  infer.py         transformers inference backend
+  evaluate.py      evaluation metrics
+  api.py           FastAPI service
+scripts/           CLI entry points (build data / eval / env check / merge weights)
+configs/           training configs (0.5B local / 7B target)
+deploy/            Dockerfile, compose, vLLM launch script
+docs/              architecture, CUDA runbook, metric definitions
+tests/             50 tests
 ```
 
 ## Roadmap
 
-### 已完成
+### Done
 
-- [x] 审核分类体系与结构化 Schema（含三级容错解析）
-- [x] 合成数据管线：模板生成 → 缺陷注入 → 标签反推 → 注入后自检
-- [x] 底题层面不相交的数据切分
-- [x] QLoRA 训练脚本（设备自适应，本机与 CUDA 目标共用一份代码）
-- [x] 本机真实训练产出 LoRA 适配器
-- [x] 基座 vs 微调对比评测
-- [x] FastAPI 服务（业务接口 + OpenAI 兼容接口）
-- [x] Docker / vLLM 交付物
-- [x] 完整中文文档
+- [x] Audit taxonomy and structured schema (including three-level fault-tolerant parsing)
+- [x] Synthetic data pipeline: template generation → defect injection → label derivation → post-injection self-check
+- [x] Data splits disjoint at the base-question level
+- [x] QLoRA training script (device-adaptive; one codebase for local and CUDA targets)
+- [x] Real local training producing a LoRA adapter
+- [x] Base vs. fine-tuned comparative evaluation
+- [x] FastAPI service (business endpoint + OpenAI-compatible endpoint)
+- [x] Docker / vLLM delivery artifacts
+- [x] Complete documentation
 
-### 未完成（明确不做，不是遗漏）
+### Not done (deliberately out of scope, not overlooked)
 
-- [ ] **24GB 单卡上的 7B 正式训练。** 配置与手册已就绪，本机无 NVIDIA 显卡。见 [docs/runbook_cuda.md](docs/runbook_cuda.md)。
-- [ ] **接入真实业务题库并重新评测。** 现在的测试集是合成的，题目语言复杂度远低于真实命题，指标**不能**外推。
-- [ ] **与审核系统联调。** 接口已按对接形态设计，但没有真实的下游系统可连。
-- [ ] **并发压测与容量评估。** vLLM 的吞吐参数（`--gpu-memory-utilization`、`--max-model-len`）需要按真实显存和 QPS 调优。
-- [ ] **模型效果调优。** 数据配比、超参搜索、拒绝采样、DPO 对齐——都还没做。
-- [ ] **审核标准变更后的持续迭代流程。** 改 `prompts.py` 必须重训，但目前没有自动化的回归验证。
+- [ ] **Formal 7B training on a single 24GB GPU.** Configs and runbook are ready; this machine has no NVIDIA GPU. See [docs/runbook_cuda.md](docs/runbook_cuda.md).
+- [ ] **Integrate a real question bank and re-evaluate.** The current test set is synthetic, with far lower linguistic complexity than real exam questions; the metrics **must not** be extrapolated.
+- [ ] **End-to-end integration with the audit system.** The interface is designed for that shape, but there is no real downstream system to connect to.
+- [ ] **Concurrency load testing and capacity planning.** vLLM's throughput parameters (`--gpu-memory-utilization`, `--max-model-len`) need tuning against real VRAM and QPS.
+- [ ] **Model quality tuning.** Data mixing, hyperparameter search, rejection sampling, DPO alignment — none of it done yet.
+- [ ] **A continuous iteration process for changes to the audit standard.** Editing `prompts.py` requires retraining, but there is no automated regression check for it yet.
 
-### 已知不足
+### Known limitations
 
-- 训练集 2500 条只来自 988 个底题（重复率 60%），根因是 13 个纯记忆型模板题干固定却占了约六成采样量。详见 [data/STATS.md](data/STATS.md)。
-- 缺陷类型实际分布与设定权重有偏差，根源是适用性限制（如「超纲」只对初中注入）。
-- **语义类缺陷是明显短板**：「学科错误」召回仅 53.8%（占总漏检 56%）、「表述歧义」64.6%，而表层特征类的都在 84% 以上。模型学到的主要是可模板化的模式。
-- **「敏感表述」的召回率被数据构造方式抬高了**：注入内容取自固定小词表，模型可能只是记住了那几个短语。真实场景的敏感内容是开放集合，这个分数不可外推。
-- 审核维度由规则定义，不是真实审核员的判断标准。
+- The 2500 training samples come from only 988 base questions (60% duplication). The root cause is that 13 rote-recall templates have fixed stems yet account for roughly 60% of all draws — a different quantity from the duplication rate, though coincidentally a similar figure. See [data/STATS.md](data/STATS.md).
+- The actual defect-type distribution deviates from the configured weights, due to applicability constraints (e.g. "out of syllabus" is only injected at the junior-high level).
+- **Semantic defects are the clear weak spot**: subject-matter errors have only 53.8% recall (56% of all misses) and ambiguous wording 64.6%, while surface-feature classes all sit above 84%. What the model learned is mostly templatable patterns.
+- **The sensitive-phrasing recall is inflated by how the data was built**: injected content comes from a fixed short word list, so the model may have simply memorized those phrases. Real-world sensitive content is an open set; this score does not extrapolate.
+- Audit dimensions are defined by rules, not by real reviewers' judgment.
 
-## 开发
+## Development
 
 ```bash
-make test        # 50 个测试
-make check-env   # 环境自检
+make test        # 50 tests
+make check-env   # environment sanity check
 ```
 
-测试覆盖的是**已知踩过的坑**，不是行覆盖率：
+The tests cover **pitfalls actually hit**, not line coverage:
 
-- 标签与文本一致性（注入的缺陷在最终文本里必须真的还在）
-- 切分隔离（底题不相交）
-- prompt 契约（格式骨架照抄必须校验失败；每类问题都必须在 prompt 里说明）
-- 训练标签能被推理侧解析器接受
-- 评测报告的四条结论分支（提升 / 持平 / **下降** / 主指标饱和），包括最难触发的那条
-- 报告里表格与结论段的数字口径一致（这次真出过两处数字对不上）
-- **核心逻辑不得传递性依赖 torch**——报表渲染必须在只装了 pydantic 的环境里能导入。
-  这条用子进程断言，因为本地装着 torch，同进程里测不出来（CI 第一次跑就是这么挂的）
+- Label/text consistency (an injected defect must genuinely still be present in the final text)
+- Split isolation (base questions disjoint)
+- Prompt contract (copying the format skeleton verbatim must fail validation; every issue type must be described in the prompt)
+- Training labels must be accepted by the inference-side parser
+- All four conclusion branches of the evaluation report (improvement / flat / **regression** / primary-metric saturation), including the hardest one to trigger
+- The numbers in the report's tables and its conclusion paragraph must use the same definition (two of them genuinely disagreed at one point)
+- **Core logic must not transitively depend on torch** — report rendering must be importable in an environment with only pydantic installed. This one asserts in a subprocess, because torch *is* installed locally and the failure is invisible in-process (it is exactly how the first CI run broke)
 
-## 许可
+## License
 
-仅供学习与内部使用。
+For learning and internal use only.
