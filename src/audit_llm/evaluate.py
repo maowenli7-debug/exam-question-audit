@@ -20,9 +20,21 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from .infer import AuditModel, resolve_device
 from .schema import AuditResult, Question
+
+if TYPE_CHECKING:  # pragma: no cover - 只在类型检查时求值
+    # AuditModel 只用于下面 evaluate_model 的类型标注，运行时不需要。
+    #
+    # 这里**必须**用 TYPE_CHECKING 而不是顶层 import：infer 模块顶层有
+    # ``import torch``，而 CI 只装 pydantic + pytest（torch 有好几个 GB，
+    # 而 report 相关的逻辑一行都用不到它）。一旦顶层导入，test_eval_report.py
+    # 会在 collection 阶段就 ModuleNotFoundError，整个测试文件跑不了。
+    #
+    # 这个坑本地测不出来——本地 conda 环境装着 torch，import 一定会成功。
+    # 只有 CI 能暴露它，所以 CI 里专门加了一步守住（见 .github/workflows/ci.yml）。
+    from .infer import AuditModel
 
 __all__ = ["eval_result_to_dict"]
 

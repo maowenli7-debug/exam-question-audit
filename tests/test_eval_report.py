@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -287,3 +288,43 @@ def test_bare_json_rate_can_be_lower_than_format_rate():
     r = _make("微调模型", 100, format_ok=90, bare=30)
     assert r.format_rate == 0.9
     assert r.bare_json_rate == 0.3
+
+
+# ==========================================================================
+# 导入边界：报告逻辑不能把 torch 拖进来
+# ==========================================================================
+
+def test_run_eval_import_does_not_pull_torch():
+    """导入 run_eval 不得传递性引入 torch / transformers / peft / trl。
+
+    这是被真实事故逼出来的回归测试。CI 第一次跑就挂了：
+
+        test_eval_report.py → run_eval → audit_llm.evaluate → audit_llm.infer
+        → import torch → ModuleNotFoundError: No module named 'torch'
+
+    CI 只装 pydantic + pytest（torch 有几个 GB，而报表逻辑一行都用不到），
+    于是这整个测试文件在 collection 阶段就崩了，0 个测试跑成。
+
+    **为什么必须开子进程**：本地环境装着 torch，在同进程里断言
+    ``"torch" not in sys.modules`` 会被别的测试先导入 torch 而假绿——那正是
+    这个 bug 能溜到 CI 的原因。子进程是干净的，断言才有意义。
+    """
+    code = (
+        "import sys;"
+        f"sys.path[:0] = [{str(REPO_ROOT / 'scripts')!r}, {str(REPO_ROOT / 'src')!r}];"
+        "import run_eval;"
+        "print(','.join(m for m in ('torch', 'transformers', 'peft', 'trl')"
+        " if m in sys.modules))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=180
+    )
+    assert out.returncode == 0, (
+        f"导入 run_eval 直接失败了：\n{out.stderr[-800:]}"
+    )
+    leaked = out.stdout.strip()
+    assert leaked == "", (
+        f"导入 run_eval 时传递性引入了 {leaked}。\n"
+        "报表渲染逻辑必须在无 torch 环境下可导入——把顶层 import 挪进函数，"
+        "或改用 typing.TYPE_CHECKING（evaluate.py 就是这么改的）。"
+    )

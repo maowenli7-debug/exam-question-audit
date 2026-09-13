@@ -30,6 +30,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install "pydantic>=2.7" "pytest>=8.0"
 
+      - name: 检查核心逻辑不传递性依赖 torch
+        # 这一步是被真实事故逼出来的：test_eval_report.py 导入 run_eval，
+        # 而 run_eval 顶层导入 audit_llm.infer，infer 顶层 ``import torch``——
+        # 于是「不依赖 torch 的核心测试」在只装了 pydantic+pytest 的 CI 里
+        # 收集阶段就崩了。**本地永远发现不了**，因为本地环境装着 torch。
+        #
+        # 放在 pytest 之前，是为了让失败信息直接指出「谁把 torch 拖进来了」，
+        # 而不是让人对着一个 ImportError 猜。
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path[:0] = ["scripts", "src"]
+
+          import run_eval  # noqa: F401  导入即测试
+
+          leaked = [m for m in ("torch", "transformers", "peft", "trl")
+                    if m in sys.modules]
+          if leaked:
+              raise SystemExit(
+                  f"✗ 导入 run_eval 时传递性引入了 {leaked}。\n"
+                  "  核心逻辑（报表渲染、数据合成、审核规则）必须在无 torch 环境下可用。\n"
+                  "  修法：把顶层 import 挪进函数，或改用 typing.TYPE_CHECKING。"
+              )
+          print("✓ run_eval 及其依赖不引入 torch/transformers/peft/trl")
+          PY
+
       - name: 跑测试
         run: python -m pytest -v
 

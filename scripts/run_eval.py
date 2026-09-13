@@ -25,7 +25,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from audit_llm.evaluate import EvalResult, eval_result_to_dict, evaluate_model  # noqa: E402
-from audit_llm.infer import AuditModel  # noqa: E402
+
+# 注意：这里**不能**在模块顶层 ``from audit_llm.infer import AuditModel``。
+# infer 会 ``import torch``，而本模块的报告渲染逻辑（render_report /
+# _conclusion_text）被 tests/test_eval_report.py 导入来测，CI 里没有 torch。
+# 顶层导入会让那个测试文件在 collection 阶段就挂掉——本地因为装着 torch 而看不见。
+# 所以把 import 推迟到 main() 里，只在实际要跑推理时才拉进来。
+# （evaluate.py 里 AuditModel 出现在类型标注上，已用 TYPE_CHECKING 同样处理。）
 
 # 格式失败原因的英文码 -> 中文说明，写进报告便于阅读
 FAILURE_LABELS = {
@@ -270,6 +276,8 @@ def _conclusion_text(base: EvalResult, ft: EvalResult) -> str:
 
 
 def main() -> None:
+    from audit_llm.infer import AuditModel  # 见文件顶部的说明：推迟到此处导入
+
     ap = argparse.ArgumentParser(description="对比评测基座模型与微调模型")
     ap.add_argument("--base-model", default="models/Qwen2.5-0.5B-Instruct")
     ap.add_argument("--adapter", default="outputs/qwen2.5-0.5b-lora")
